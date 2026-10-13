@@ -83,6 +83,19 @@
   .actions .go { border:0; color:#fff; background:linear-gradient(135deg,var(--blue),var(--blue2)); }
   .actions button:disabled { opacity:.6; cursor:wait; }
   .err { color:#c62828; font-size:13px; min-height:18px; margin:-8px 0 8px; }
+  .sheet { max-height:92vh; overflow:auto; }
+  .opts { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin:6px 0 14px; }
+  .opt { border:1px solid var(--line); border-radius:12px; padding:10px; cursor:pointer; text-align:left; background:#fff; font:inherit; color:var(--ink); }
+  .opt b { display:block; font-size:15px; } .opt span { font:12px var(--mono); color:var(--mute); }
+  .opt[aria-pressed=true] { border-color:var(--blue); background:#e8f1ff; box-shadow:0 0 0 2px var(--glow); }
+  .time small { display:block; color:var(--blue); font-size:11px; }
+  .tablecard { padding:6px 10px; overflow-x:auto; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th { text-align:left; font:11px var(--mono); letter-spacing:.1em; text-transform:uppercase; color:var(--mute); padding:10px 6px; border-bottom:2px solid var(--line); }
+  td { padding:11px 6px; border-bottom:1px dashed var(--line); vertical-align:top; }
+  tr:last-child td { border-bottom:0; }
+  td.nm { font-weight:600; } td.am { font:700 13px var(--mono); color:var(--blue); white-space:nowrap; }
+  td.dt { font:12px var(--mono); color:var(--mute); } td.wk small { display:block; color:var(--mute); font-size:11px; }
   footer { text-align:center; font:11px var(--mono); color:var(--mute); margin-top:24px; letter-spacing:.08em; }
 </style>
 </head>
@@ -99,6 +112,7 @@
   <div class="tabs" role="tablist">
     <button class="tab" role="tab" id="t-now" aria-selected="true">This week</button>
     <button class="tab" role="tab" id="t-hist" aria-selected="false">Past 4 weeks</button>
+    <button class="tab" role="tab" id="t-pay" aria-selected="false">Payments</button>
   </div>
 
   <section id="now">
@@ -119,20 +133,41 @@
   </section>
 
   <section id="hist" hidden></section>
+  <section id="paid" hidden>
+    <div class="card">
+      <div class="stats">
+        <div class="stat"><b id="p-total">₦0</b><span>Total collected</span></div>
+        <div class="stat"><b id="p-count">0</b><span>Payments</span></div>
+      </div>
+    </div>
+    <div class="card tablecard">
+      <table id="p-table">
+        <thead><tr><th>Name</th><th>Amount</th><th>Date</th><th>Weeks paid for</th></tr></thead>
+        <tbody id="p-list"></tbody>
+      </table>
+      <div class="empty" id="p-empty" hidden>// no payments recorded yet</div>
+    </div>
+  </section>
   <footer>RESETS EVERY SATURDAY 00:00 · AUDIT LOG KEEPS 4 PAST WEEKS ON SCREEN</footer>
 </main>
 
 <div class="modal" id="modal" hidden>
   <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="m-title">
     <h3 id="m-title">Confirm payment</h3>
-    <p>You are making a payment for <b>this week's game</b> (<span id="m-week"></span>). Please confirm to pay:</p>
-    <div class="amount">₦3,200</div>
+    <p id="m-text"></p>
+    <label>How many weeks?</label>
+    <div class="opts" id="opts"></div>
+    <div class="amount" id="m-amount"></div>
     <label for="m-name">Your name (shown on the list)</label>
     <input id="m-name" maxlength="40" autocomplete="name" placeholder="e.g. Chidi Okafor">
+    <label for="m-email">Email</label>
+    <input id="m-email" type="email" autocomplete="email" placeholder="you@example.com">
+    <label for="m-phone">Phone number</label>
+    <input id="m-phone" type="tel" autocomplete="tel" placeholder="08012345678">
     <div class="err" id="m-err"></div>
     <div class="actions">
       <button id="m-cancel" type="button">Cancel</button>
-      <button id="m-go" class="go" type="button">Confirm &amp; pay ₦3,200</button>
+      <button id="m-go" class="go" type="button"></button>
     </div>
   </div>
 </div>
@@ -141,16 +176,20 @@ const CFG = window.CONFIG, tz = CFG.TIMEZONE, off = CFG.TZ_OFFSET_HOURS ?? 1, HO
 const $ = (id) => document.getElementById(id);
 const fmtTime = (iso) => new Intl.DateTimeFormat("en-GB", { timeZone:tz, weekday:"short", day:"numeric", month:"short", hour:"2-digit", minute:"2-digit" }).format(new Date(iso));
 const fmtDay = (d) => new Date(d + "T12:00:00Z").toLocaleDateString("en-GB", { day:"numeric", month:"short", year:"numeric", timeZone:"UTC" });
+const fmtShort = (d) => new Date(d + "T12:00:00Z").toLocaleDateString("en-GB", { day:"numeric", month:"short", timeZone:"UTC" });
 const addDays = (d, n) => { const x = new Date(d + "T12:00:00Z"); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0,10); };
-let current = null, nextReset = null;
+let current = null, nextReset = null, price = 10, maxWeeks = 4, thisWeek = "", weeks = 1;
+const naira = (n) => "₦" + n.toLocaleString("en-NG");
 
-function rows(players) {
+function rows(players, weekOf) {
   return players.map((p, i) => {
     const li = document.createElement("li"); li.className = "row"; li.style.animationDelay = i * 40 + "ms";
     const c = document.createElement("div"); c.className = "check"; c.textContent = "✓";
     const n = document.createElement("div"); n.className = "name"; n.textContent = p.name;
     const x = document.createElement("div"); x.className = "idx"; x.textContent = String(i + 1).padStart(2, "0");
     const t = document.createElement("div"); t.className = "time"; t.textContent = fmtTime(p.paidAt);
+    const ago = p.paidWeek ? Math.round((Date.parse(weekOf + "T12:00:00Z") - Date.parse(p.paidWeek + "T12:00:00Z")) / (7 * 864e5)) : 0;
+    if (ago > 0) { const sm = document.createElement("small"); sm.textContent = `Paid ${ago} week${ago > 1 ? "s" : ""} ago · week ${p.n} of ${p.weeks}`; t.append(sm); }
     li.append(c, n, t, x); return li;
   });
 }
@@ -163,8 +202,8 @@ async function loadNow() {
   $("wk-title").textContent = "Week of " + fmtDay(d.week);
   $("count").textContent = d.players.length;
   $("bar").style.width = Math.min(100, d.players.length / (CFG.TARGET_PLAYERS || 14) * 100) + "%";
-  $("m-week").textContent = "week of " + fmtDay(d.week);
-  $("list").replaceChildren(...rows(d.players));
+  price = d.price; maxWeeks = d.maxWeeks; thisWeek = fmtDay(d.week);
+  $("list").replaceChildren(...rows(d.players, d.week));
   $("empty").hidden = d.players.length > 0;
 }
 
@@ -179,9 +218,26 @@ async function loadHist() {
     card.querySelector(".badge").textContent = d.players.length + " paid";
     card.querySelector(".lock").textContent = "🔒 CLOSED · " + fmtDay(d.week) + " → " + fmtDay(addDays(d.week, 6));
     const ul = card.querySelector("ul");
-    if (d.players.length) ul.append(...rows(d.players));
+    if (d.players.length) ul.append(...rows(d.players, d.week));
     else ul.innerHTML = '<div class="empty">// no payments recorded</div>';
     return card;
+  }));
+}
+
+async function loadPaid() {
+  const d = await (await fetch("/api/payments")).json();
+  $("p-total").textContent = naira(d.total); $("p-count").textContent = d.count;
+  $("p-empty").hidden = d.count > 0;
+  $("p-table").hidden = d.count === 0;
+  $("p-list").replaceChildren(...d.payments.map((p) => {
+    const tr = document.createElement("tr");
+    const cells = [["nm", p.name], ["am", naira(p.amount)], ["dt", fmtTime(p.paidAt)]];
+    for (const [cls, text] of cells) { const td = document.createElement("td"); td.className = cls; td.textContent = text; tr.append(td); }
+    const wk = document.createElement("td"); wk.className = "wk";
+    const start = p.startWeek || current;
+    wk.textContent = Array.from({ length: p.weeks }, (_, i) => fmtShort(addDays(start, 7 * i))).join(", ");
+    const sm = document.createElement("small"); sm.textContent = p.weeks + " week" + (p.weeks > 1 ? "s" : ""); wk.append(sm);
+    tr.append(wk); return tr;
   }));
 }
 
@@ -194,31 +250,50 @@ function tick() {
 }
 
 function show(tab) {
-  $("now").hidden = tab !== "now"; $("hist").hidden = tab !== "hist";
-  $("t-now").setAttribute("aria-selected", tab === "now"); $("t-hist").setAttribute("aria-selected", tab === "hist");
+  for (const [t, id] of [["now","now"],["hist","hist"],["pay","paid"]]) {
+    $(id).hidden = tab !== t; $("t-" + t).setAttribute("aria-selected", tab === t);
+  }
   if (tab === "hist") loadHist();
+  if (tab === "pay") loadPaid();
 }
 $("t-now").onclick = () => show("now");
 $("t-hist").onclick = () => show("hist");
+$("t-pay").onclick = () => show("pay");
 
 
-const openModal = () => { $("m-err").textContent = ""; $("modal").hidden = false; $("m-name").focus(); };
+function renderModal() {
+  $("opts").replaceChildren(...Array.from({ length: maxWeeks }, (_, i) => {
+    const w = i + 1, b = document.createElement("button");
+    b.type = "button"; b.className = "opt"; b.setAttribute("aria-pressed", w === weeks);
+    b.innerHTML = `<b>${w === 1 ? "This week" : w + " weeks"}</b><span>${naira(w * price)}</span>`;
+    b.onclick = () => { weeks = w; renderModal(); };
+    return b;
+  }));
+  $("m-text").innerHTML = weeks === 1
+    ? `You are making a payment for <b>this week's game</b> (week of ${thisWeek}). Please confirm to pay:`
+    : `You are paying for <b>this week's game and the next ${weeks - 1} week${weeks > 2 ? "s" : ""}</b> (${weeks} weeks from the week of ${thisWeek}). Please confirm to pay:`;
+  $("m-amount").textContent = naira(weeks * price);
+  $("m-go").textContent = "Confirm & pay " + naira(weeks * price);
+}
+const openModal = () => { $("m-err").textContent = ""; weeks = 1; renderModal(); $("modal").hidden = false; $("m-name").focus(); };
 const closeModal = () => { $("modal").hidden = true; };
 $("pay").onclick = openModal;
 $("m-cancel").onclick = closeModal;
 $("modal").onclick = (e) => { if (e.target === $("modal")) closeModal(); };
 $("m-go").onclick = async () => {
-  const name = $("m-name").value.trim();
-  if (name.length < 2) { $("m-err").textContent = "Please enter your name."; return; }
+  const body = { name: $("m-name").value.trim(), email: $("m-email").value.trim(), phone: $("m-phone").value.trim(), weeks };
+  if (body.name.length < 2) { $("m-err").textContent = "Please enter your name."; return; }
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(body.email)) { $("m-err").textContent = "Please enter a valid email."; return; }
+  if (!/^\+?\d{7,15}$/.test(body.phone.replace(/[\s-]/g, ""))) { $("m-err").textContent = "Please enter a valid phone number."; return; }
   $("m-go").disabled = true; $("m-go").textContent = "Redirecting…";
   try {
-    const r = await fetch("/api/pay", { method:"POST", headers:{ "content-type":"application/json" }, body: JSON.stringify({ name }) });
+    const r = await fetch("/api/pay", { method:"POST", headers:{ "content-type":"application/json" }, body: JSON.stringify(body) });
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || "Something went wrong");
     location.href = d.link; // same tab
   } catch (e) {
     $("m-err").textContent = e.message;
-    $("m-go").disabled = false; $("m-go").textContent = "Confirm & pay ₦3,200";
+    $("m-go").disabled = false; renderModal();
   }
 };
 

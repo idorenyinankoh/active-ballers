@@ -16,3 +16,8 @@
   from = "/api/pay"
   to = "/.netlify/functions/pay"
   status = 200
+
+[[redirects]]
+  from = "/api/payments"
+  to = "/.netlify/functions/payments"
+  status = 200

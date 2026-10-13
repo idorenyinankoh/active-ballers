@@ -1,4 +1,4 @@
-import { store, weekId, json } from "./_lib.mjs";
+import { store, weekId, json, PRICE_PER_WEEK, MAX_WEEKS } from "./_lib.mjs";
 
 export default async (req) => {
   const current = weekId();
@@ -12,7 +12,7 @@ export default async (req) => {
   )
     .filter(Boolean)
     .sort((a, b) => new Date(a.paidAt) - new Date(b.paidAt))
-    .map(({ name, paidAt }) => ({ name, paidAt })); // never expose reference/email
+    .map(({ name, paidAt, paidWeek, weeks, n }) => ({ name, paidAt, paidWeek, weeks, n })); // never expose reference/email
 
-  return json({ week, current, closed: week !== current, players });
+  return json({ week, current, closed: week !== current, price: PRICE_PER_WEEK, maxWeeks: MAX_WEEKS, players });
 };

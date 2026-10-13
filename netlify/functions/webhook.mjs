@@ -1,7 +1,6 @@
-import { store, weekId, json } from "./_lib.mjs";
+import { store, weekId, addWeeks, json, PRICE_PER_WEEK, MAX_WEEKS } from "./_lib.mjs";
 
 const SECRET = process.env.WEBHOOK_SECRET;
-const MIN_AMOUNT = Number(process.env.AMOUNT || 3200);
 
 // Flutterwave sends the "secret hash" you set in the dashboard in the `verif-hash` header.
 function hashOk(req) {
@@ -10,7 +9,7 @@ function hashOk(req) {
 }
 
 // Ask Flutterwave directly whether this payment really succeeded (defeats forged webhooks).
-async function verified(tx_ref) {
+async function verified(tx_ref, minAmount) {
   const key = process.env.FLW_SECRET_KEY;
   if (!key) return true; // local testing without a key
   const res = await fetch(
@@ -19,7 +18,7 @@ async function verified(tx_ref) {
   );
   const b = await res.json().catch(() => ({}));
   const d = b.data;
-  return !!d && d.status === "successful" && d.tx_ref === tx_ref && d.currency === "NGN" && Number(d.amount) >= MIN_AMOUNT;
+  return !!d && d.status === "successful" && d.tx_ref === tx_ref && d.currency === "NGN" && Number(d.amount) >= minAmount;
 }
 
 export default async (req) => {
@@ -36,14 +35,24 @@ export default async (req) => {
   const status = String(d.status ?? "").toLowerCase();
   if (!tx_ref) return json({ ignored: "no tx_ref" });
   if (!/^(successful|success|completed)$/.test(status)) return json({ ignored: "not successful" });
-  if (!(await verified(tx_ref))) { console.error("Verification failed", tx_ref); return json({ error: "not verified" }, 422); }
+  const weeks = Number(/-(\d)w-/.exec(tx_ref)?.[1] ?? 1);
+  if (weeks < 1 || weeks > MAX_WEEKS) return json({ ignored: "bad tx_ref" });
+  if (!(await verified(tx_ref, weeks * PRICE_PER_WEEK))) { console.error("Verification failed", tx_ref); return json({ error: "not verified" }, 422); }
 
   // Name as entered/confirmed by the payer at Flutterwave checkout.
   const name = String(d.customer?.name ?? "").trim().replace(/\s+/g, " ") || `Player (${tx_ref.slice(-6)})`;
 
   const t = new Date(d.created_at ?? Date.now());
   const paidAt = isNaN(t) ? new Date() : t;
+  // One entry per week bought (this week + following weeks), all pointing at the real payment time.
   // Same tx_ref delivered twice just overwrites itself, so no duplicates.
-  await store().setJSON(`${weekId(paidAt)}/${tx_ref}`, { name, paidAt: paidAt.toISOString(), reference: tx_ref });
+  const paidWeek = weekId(paidAt);
+  const s = store();
+  const amount = Number(d.amount) || weeks * PRICE_PER_WEEK;
+  await s.setJSON(`ledger/${tx_ref}`, { name, amount, weeks, startWeek: paidWeek, paidAt: paidAt.toISOString() });
+  await Promise.all(Array.from({ length: weeks }, (_, i) =>
+    s.setJSON(`${addWeeks(paidWeek, i)}/${tx_ref}`, {
+      name, paidAt: paidAt.toISOString(), paidWeek, weeks, n: i + 1, reference: tx_ref,
+    })));
   return json({ ok: true });
 };
